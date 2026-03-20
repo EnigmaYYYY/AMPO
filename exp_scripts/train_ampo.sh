@@ -24,6 +24,8 @@ TEST_FILE="${HOME}/data/valid.parquet"
 # MIX 
 num_off_policy_targets=2
 max_available_targets=4
+pass_num=4
+use_adaptive_k=True
 length_strategy='short' # short/long
 use_sft_multitask_loss=False
 use_off_policy_loss=True
@@ -108,6 +110,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.adaptive_mix_src.main_mix_dapo \
     data.reward_impl_version=${reward_impl_version} \
     data.val_reward_impl_version=${val_reward_impl_version} \
     actor_rollout_ref.rollout.n=${n_resp_per_prompt} \
+    actor_rollout_ref.rollout.pass_num=${pass_num} \
+    actor_rollout_ref.rollout.use_adaptive_k=${use_adaptive_k} \
     algorithm.use_kl_in_reward=${use_kl_in_reward} \
     algorithm.kl_ctrl.kl_coef=${kl_coef} \
     algorithm.norm_adv_by_std_in_grpo=False \

@@ -716,6 +716,8 @@ class MIXRayDAPOTrainer(RayPPOTrainer):
             n_samples = n_samples - 1 # if filter tgt with acc, we either use tgt or on policy samples.
         
         self.teacher_source_tracker = defaultdict(int)
+        self.correct_teacher_responses = 0
+        self.in_correct_teacher_responses = 0
         
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
@@ -921,6 +923,10 @@ class MIXRayDAPOTrainer(RayPPOTrainer):
                                 metrics['injection/prob_reward_min'] = injection_stats['prob_reward_min']
                             if 'prob_reward_std' in injection_stats:
                                 metrics['injection/prob_reward_std'] = injection_stats['prob_reward_std']
+                            if 'num_incorrect_teacher_responses' in injection_stats:
+                                metrics['injection/num_incorrect_teacher_responses'] = injection_stats['num_incorrect_teacher_responses']
+                            if 'num_correct_teacher_responses' in injection_stats:
+                                metrics['injection/num_correct_teacher_responses'] = injection_stats['num_correct_teacher_responses']
                         
                         # log format_reward and pr_reward
                         format_reward = format_reward_tensor.sum(-1)
@@ -1285,6 +1291,7 @@ class MIXRayDAPOTrainer(RayPPOTrainer):
         
         n = self.config.actor_rollout_ref.rollout.n
         n_prefix = self.config.actor_rollout_ref.rollout.n_prefix
+        pass_num = self.config.actor_rollout_ref.rollout.get('pass_num', 1)
         
         if 'tgt_input_ids' not in gen_batch.batch or n_prefix <= 0: 
             gen_batch_out.batch['prefix_mask'] = prefix_mask
@@ -1296,7 +1303,7 @@ class MIXRayDAPOTrainer(RayPPOTrainer):
         
         prefix_strategy = self.config.actor_rollout_ref.rollout.get('prefix_strategy', 'random')
         injection_strategy = self.config.actor_rollout_ref.rollout.get('injection_strategy', 'adaptive')  # adaptive/hybrid/always
-        success_threshold = n_prefix / n 
+        replace_threshold = pass_num / n
         
         if injection_strategy not in ['adaptive', 'hybrid', 'always']:
             logger.info(f"Invalid injection strategy: {injection_strategy}, using 'never' instead")
@@ -1387,13 +1394,17 @@ class MIXRayDAPOTrainer(RayPPOTrainer):
                     incorrect_positions.append(i_)
             
             success_rate = len(correct_positions) / n
-            # self.success_threshold = effective_k / n
-            success_threshold = 1 / n
-            sample_success = success_rate >= success_threshold
+            if self.config.actor_rollout_ref.rollout.get('use_adaptive_k', False):
+                replace_threshold = 0.5
+                sample_success = success_rate >= replace_threshold
+                if not sample_success:
+                    effective_k = min(num_teacher_models, int(n * replace_threshold - len(correct_positions)))
+            else:
+                sample_success = success_rate >= replace_threshold
             success_mask.append(sample_success)
 
             logger.info(f"Sample {i}: {len(correct_positions)}/{n} correct, "
-                    f"success_rate={success_rate:.3f}, threshold={success_threshold}")
+                    f"success_rate={success_rate:.3f}, threshold={replace_threshold}")
             
             on_policy_scores = scores.copy()
 
@@ -1594,10 +1605,13 @@ class MIXRayDAPOTrainer(RayPPOTrainer):
                     old_score = on_policy_scores[global_idx]
                     off_policy_score = target_batch_item.batch['rm_scores'].sum().item()
                     
-                    if off_policy_score < 1.0:
-                        logger.info(f"Targeted injection: sample {i}, position {j}, this off-policy score: {off_policy_score} is too low, will set it to 1.0")
-                        target_batch_item.batch['rm_scores'][valid_response_length - 1] = 1.0
-                    
+                    if off_policy_score < 0.5:
+                        self.in_correct_teacher_responses += 1
+                        logger.info(f"Targeted injection: sample {i}, position {j}, this off-policy score: {off_policy_score} is too low")
+                        # target_batch_item.batch['rm_scores'][valid_response_length - 1] = 1.0
+                    else:
+                        self.correct_teacher_responses += 1
+
                     off_policy_score = target_batch_item.batch['rm_scores'].sum().item()
                     
                     sample_correctness = 'correct' if old_score > self.config.reward_model.format_coefficient + 0.5 else 'incorrect'
@@ -1650,6 +1664,8 @@ class MIXRayDAPOTrainer(RayPPOTrainer):
             'avg_effective_targets': sum(effective_targets_per_sample) / len(effective_targets_per_sample),
             'max_effective_targets': max(effective_targets_per_sample),
             'min_effective_targets': min(effective_targets_per_sample),
+            'num_correct_teacher_responses': self.correct_teacher_responses,
+            'num_incorrect_teacher_responses': self.in_correct_teacher_responses,
         }
         if len(scoreB_minus_scoreA_list) > 0:
             injection_stats.update({

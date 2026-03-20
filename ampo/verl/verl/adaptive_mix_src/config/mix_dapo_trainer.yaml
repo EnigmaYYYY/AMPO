@@ -124,6 +124,8 @@ actor_rollout_ref:
     prefix_reward_weight_beta: 1.0
     prefix_share_across_samples: False
     n_prefix: ${data.num_off_policy_targets}
+    pass_num: 1 # replace_threshold = pass_num / n
+    use_adaptive_k: False 
     injection_strategy: 'adaptive'
     target_selection_strategy: 'best_k'           # best_k/first_k/random_k，默认best_k
 
